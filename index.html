@@ -1,0 +1,324 @@
+<!-- Created by Vahid Tavakkoli for education purpose -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Interactive Robot Builder with IK</title>
+    <style>
+        body { margin: 0; font-family: Arial, sans-serif; overflow: hidden; background-color: #f0f0f0; }
+        #container { width: 100vw; height: 100vh; }
+        #gui-container {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            max-height: calc(100vh - 20px); 
+            overflow-y: auto; 
+            z-index: 100; 
+            background-color: rgba(230, 230, 230, 0.8);
+            border-radius: 5px;
+            padding: 5px;
+        }
+        #gui-container::-webkit-scrollbar { width: 8px; }
+        #gui-container::-webkit-scrollbar-track { background: rgba(0,0,0,0.1); border-radius: 4px; }
+        #gui-container::-webkit-scrollbar-thumb { background: #888; border-radius: 4px; }
+        #gui-container::-webkit-scrollbar-thumb:hover { background: #555; }
+
+        #info {
+            position: absolute;
+            bottom: 10px;
+            left: 10px;
+            padding: 10px;
+            background-color: rgba(0,0,0,0.7);
+            color: white;
+            border-radius: 5px;
+            font-size: 0.9em;
+        }
+        
+        #dh-table-container {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            background-color: rgba(255, 255, 255, 0.85);
+            border-radius: 8px;
+            padding: 10px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.2);
+            font-family: 'Consolas', 'Menlo', monospace;
+            font-size: 14px;
+        }
+        #dh-table { border-collapse: collapse; text-align: center; }
+        #dh-table th, #dh-table td { padding: 6px 12px; border: 1px solid #ccc; }
+        #dh-table th { background-color: #e9e9e9; }
+        .variable-param { font-weight: bold; background-color: #d4edda; color: #155724; }
+        .variable-param .q-label { font-size: 0.8em; color: #555; display: block; }
+        
+        .editable { cursor: pointer; background-color: #fffde7; }
+        .editable:hover { background-color: #fff9c4; }
+        .editable input {
+            width: 60px; padding: 2px; border: 1px solid #007bff; border-radius: 2px;
+            text-align: center; font-family: inherit; font-size: inherit; -moz-appearance: textfield;
+        }
+        .editable input::-webkit-outer-spin-button, .editable input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+        .lil-gui { font-size: 12px !important; }
+    </style>
+</head>
+<body>
+    <div id="container"></div>
+    <div id="gui-container"></div>
+    <div id="info">
+		Created by Vahid Tavakkoli for education purpose<br>
+        <hr style="border-color: #555; margin: 5px 0;">
+        Active Convention: <span id="active-convention">Standard DH</span><br>
+        End-Effector Pose:<br>
+        Position (X,Y,Z): <span id="ee-pos">-,-,-</span><br>
+        Orientation (RPY deg): <span id="ee-rot">-,-,-</span>
+    </div>
+    <div id="dh-table-container">
+        <h3>Denavit-Hartenberg Parameters</h3>
+        <table id="dh-table">
+            <thead><tr><th>Joint (i)</th><th>α<sub>i-1</sub> (deg)</th><th>a<sub>i-1</sub> (m)</th><th>d<sub>i</sub> (m)</th><th>θ<sub>i</sub> (deg)</th></tr></thead>
+            <tbody id="dh-table-body"></tbody>
+        </table>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/lil-gui@0.19"></script>
+
+    <script>
+        // Created by Vahid Tavakkoli for education purpose
+        let scene, camera, renderer, orbitControls, gui, jointControlsFolder;
+        let robotObjects = []; 
+        let dhParams = [];   
+        let jointControllers = [];
+        let T_base_orientation;
+        let ikTargetMarker;
+
+        // --- NEW: Nicer, physically-based materials ---
+        const linkMaterial = new THREE.MeshStandardMaterial({ color: 0x0077ff, metalness: 0.8, roughness: 0.3 });
+        const jointMaterial = new THREE.MeshStandardMaterial({ color: 0xffcc00, metalness: 0.4, roughness: 0.4 });
+        const endEffectorMaterial = new THREE.MeshStandardMaterial({ color: 0xff0000, metalness: 0.5, roughness: 0.4 });
+        const AXIS_SIZE = 0.15;
+
+        const settings = {
+            convention: 'standard',
+            addRevolute: () => addLink(0, 0, 0.25, 0, 'revolute'),
+            addPrismatic: () => addLink(0, 0.1, 0, 0, 'prismatic'),
+            removeLastLink: removeLastLink,
+            clearAllLinks: clearAllLinks
+        };
+        const conventionOptions = { 'Standard DH': 'standard', 'Modified DH (Craig)': 'modified' };
+
+        const ik = {
+            target: { x: 0.2, y: 0.3, z: -0.2 }, isRunning: false, iteration: 0,
+            maxIterations: 500, targetPositionVec: new THREE.Vector3(),
+            moveToTarget: () => { ik.targetPositionVec.set(ik.target.x, ik.target.y, -ik.target.z); ik.iteration = 0; ik.isRunning = true; },
+            stop: () => { ik.isRunning = false; }
+        };
+
+        function createTextSprite(message,opts){const p=opts||{};const ff=p.fontface||'Arial';const fs=p.fontsize||18;const c=document.createElement('canvas');const ctx=c.getContext('2d');ctx.font="Bold "+fs+"px "+ff;ctx.fillStyle="rgba("+p.textColor.r+","+p.textColor.g+","+p.textColor.b+", 1.0)";ctx.fillText(message,0,fs);const t=new THREE.Texture(c);t.needsUpdate=true;const m=new THREE.SpriteMaterial({map:t});const s=new THREE.Sprite(m);s.scale.set(0.1,0.05,1.0);return s;}
+        function createLabeledAxes(size){const a=new THREE.Group();const ah=new THREE.AxesHelper(size);a.add(ah);const xl=createTextSprite("X",{fontsize:48,textColor:{r:255,g:0,b:0,a:1.0}});xl.position.set(size*1.1,0,0);a.add(xl);const yl=createTextSprite("Y",{fontsize:48,textColor:{r:0,g:255,b:0,a:1.0}});yl.position.set(0,size*1.1,0);a.add(yl);const zl=createTextSprite("Z",{fontsize:48,textColor:{r:0,g:0,b:255,a:1.0}});zl.position.set(0,0,size*1.1);a.add(zl);return a;}
+		function createThickLabeledAxes(size, thickness) {
+			const axes = new THREE.Group();
+			const radius = thickness / 2; // CylinderGeometry uses radius
+
+			// Define materials
+			const matX = new THREE.MeshBasicMaterial({ color: 0xff0000 }); // Red
+			const matY = new THREE.MeshBasicMaterial({ color: 0x00ff00 }); // Green
+			const matZ = new THREE.MeshBasicMaterial({ color: 0x0000ff }); // Blue
+
+			// Create cylinders for each axis
+			const geom = new THREE.CylinderGeometry(radius, radius, size, 8);
+
+			// X Axis
+			const xAxis = new THREE.Mesh(geom, matX);
+			xAxis.rotation.z = -Math.PI / 2; // Rotate to align with X
+			xAxis.position.x = size / 2;
+			axes.add(xAxis);
+
+			// Y Axis
+			const yAxis = new THREE.Mesh(geom, matY);
+			yAxis.position.y = size / 2; // Already aligned with Y
+			axes.add(yAxis);
+
+			// Z Axis
+			const zAxis = new THREE.Mesh(geom, matZ);
+			zAxis.rotation.x = Math.PI / 2; // Rotate to align with Z
+			zAxis.position.z = size / 2;
+			axes.add(zAxis);
+
+			// Add labels (using your existing function)
+			const xl = createTextSprite("X", { fontsize: 72, textColor: { r: 255, g: 0, b: 0, a: 1.0 } });
+			xl.position.set(size * 1.1, 0, 0);
+			axes.add(xl);
+
+			const yl = createTextSprite("Y", { fontsize: 72, textColor: { r: 0, g: 255, b: 0, a: 1.0 } });
+			yl.position.set(0, size * 1.1, 0);
+			axes.add(yl);
+
+			const zl = createTextSprite("Z", { fontsize: 72, textColor: { r: 0, g: 0, b: 255, a: 1.0 } });
+			zl.position.set(0, 0, size * 1.1);
+			axes.add(zl);
+
+			return axes;
+		}
+
+        function init() {
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0xd0e0f0); // Nicer background color
+            camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.01, 1000);
+            camera.position.set(1.0, 1.2, 1.0);
+            const container = document.getElementById('container');
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setPixelRatio(window.devicePixelRatio);
+            // --- NEW: Enhanced renderer settings for better visuals ---
+            renderer.shadowMap.enabled = true;
+            renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+            renderer.outputEncoding = THREE.sRGBEncoding;
+            renderer.toneMapping = THREE.ACESFilmicToneMapping;
+            container.appendChild(renderer.domElement);
+            
+            // --- NEW: Improved Lighting ---
+            const hemiLight = new THREE.HemisphereLight(0xffffff, 0x444444, 0.8);
+            hemiLight.position.set(0, 20, 0);
+            scene.add(hemiLight);
+            const dirLight = new THREE.DirectionalLight(0xffffff, 0.7);
+            dirLight.position.set(3, 10, 5);
+            dirLight.castShadow = true;
+            dirLight.shadow.camera.top = 2; dirLight.shadow.camera.bottom = -2;
+            dirLight.shadow.camera.left = -2; dirLight.shadow.camera.right = 2;
+            dirLight.shadow.camera.near = 0.1; dirLight.shadow.camera.far = 40;
+            scene.add(dirLight);
+
+            orbitControls = new THREE.OrbitControls(camera, renderer.domElement); orbitControls.enableDamping = true; orbitControls.target.set(0, 0.3, 0);
+            const gridHelper = new THREE.GridHelper(10, 20, 0x888888, 0xcccccc);
+            gridHelper.receiveShadow = true; // Grid receives shadows
+            scene.add(gridHelper);
+            
+            // --- NEW: Robot Base ---
+            const baseGeo = new THREE.CylinderGeometry(0.2, 0.2, 0.05, 32);
+            const baseMat = new THREE.MeshStandardMaterial({ color: 0x444444, metalness: 0.1, roughness: 0.6 });
+            const robotBase = new THREE.Mesh(baseGeo, baseMat);
+            robotBase.position.y = 0.025; // Sit on top of the grid
+            robotBase.castShadow = true;
+            robotBase.receiveShadow = true;
+            scene.add(robotBase);
+
+            const worldFrameHelper = createThickLabeledAxes(0.5, 0.01); // Creates standard Y-up axes
+			worldFrameHelper.rotation.x = -Math.PI / 2; // Rotate around X by -90 degrees to make Z-up
+			scene.add(worldFrameHelper);
+            T_base_orientation = new THREE.Matrix4().makeRotationX(-Math.PI / 2); 
+			const baseFrameHelper = createLabeledAxes(AXIS_SIZE * 1.5); baseFrameHelper.applyMatrix4(T_base_orientation); scene.add(baseFrameHelper); robotObjects.push(baseFrameHelper);
+
+            gui = new lil.GUI({ container: document.getElementById('gui-container'), autoPlace: false });
+            const settingsFolder = gui.addFolder('Settings & Actions');
+            settingsFolder.add(settings, 'convention', conventionOptions).name('DH Convention').onChange(onConventionChange);
+            settingsFolder.add(settings, 'addRevolute').name("Add Revolute Joint"); settingsFolder.add(settings, 'addPrismatic').name("Add Prismatic Joint");
+            settingsFolder.add(settings, 'removeLastLink').name("Remove Last Link"); settingsFolder.add(settings, 'clearAllLinks').name("Clear All Links");
+            settingsFolder.open();
+            
+			
+            jointControlsFolder = gui.addFolder('Joint Controls (q)'); jointControlsFolder.open();
+
+            const markerGeo = new THREE.SphereGeometry(0.04, 16, 16); const markerMat = new THREE.MeshBasicMaterial({ color: 0xff0000, transparent: true, opacity: 0.7 });
+            ikTargetMarker = new THREE.Mesh(markerGeo, markerMat); scene.add(ikTargetMarker);
+            
+            const ikFolder = gui.addFolder('Inverse Kinematics');
+            ikFolder.add(ik.target, 'x', -2, 2, 0.01).name('Target X').onChange(updateIKMarkerPosition);
+            ikFolder.add(ik.target, 'z', -2, 2, 0.01).name('Target Y').onChange(updateIKMarkerPosition);
+            ikFolder.add(ik.target, 'y', 0, 2, 0.01).name('Target Z').onChange(updateIKMarkerPosition);
+            ikFolder.add(ik, 'moveToTarget').name('Go to Target'); ikFolder.add(ik, 'stop').name('Stop');
+            ikFolder.open();
+
+            addLink(0, 0.665, 0.250, 0,   'revolute'); addLink(0, 0.0, 0.250, 180, 'revolute');
+            addLink(0, 0.0,   0.0,   0,   'prismatic'); addLink(0, 0.0, 0.0,   0,   'revolute');
+
+            updateIKMarkerPosition();
+            window.addEventListener('resize', onWindowResize, false);
+            updateRobotVisualization();
+            animate();
+        }
+        
+        function updateIKMarkerPosition() { if (ikTargetMarker) { ikTargetMarker.position.set(ik.target.x, ik.target.y, -ik.target.z); } }
+        
+        function onConventionChange() {
+            document.getElementById('active-convention').textContent = getKeyByValue(conventionOptions, settings.convention);
+            const currentQ = dhParams.map(p => p.type === 'revolute' ? p.theta_deg : p.d);
+            jointControllers.forEach(c => c.destroy()); jointControllers = [];
+            const startIndex = settings.convention === 'standard' ? 1 : 0;
+            dhParams.forEach((params, i) => {
+                let controller;
+                if (params.type === 'revolute') {
+                    controller = jointControlsFolder.add(params, 'theta_deg', -180, 180, 1).name(`q${i + startIndex} (θ)`).onChange(updateRobotVisualization);
+                    params.theta_deg = currentQ[i];
+                } else {
+                    controller = jointControlsFolder.add(params, 'd', -0.2, 0.2, 0.001).name(`q${i + startIndex} (d)`).onChange(updateRobotVisualization);
+                    params.d = currentQ[i];
+                }
+                jointControllers.push(controller);
+            });
+            updateRobotVisualization();
+        }
+
+        function makeCellEditable(cell){if(cell.querySelector('input'))return;const v=cell.textContent;const r=parseInt(cell.dataset.row);const k=cell.dataset.param;cell.innerHTML=`<input type="number" value="${v}" step="0.01"/>`;const i=cell.querySelector('input');i.focus();i.select();const save=()=>{const n=parseFloat(i.value);if(!isNaN(n)){dhParams[r][k]=n;}updateRobotVisualization();};i.addEventListener('blur',save);i.addEventListener('keydown',(e)=>{if(e.key==='Enter'){i.blur();}else if(e.key==='Escape'){updateDHTable();}});}
+        
+        function updateDHTable() {
+            const tableBody = document.getElementById('dh-table-body'); tableBody.innerHTML = ''; 
+            const startIndex = settings.convention === 'standard' ? 1 : 0;
+            dhParams.forEach((p, i) => {
+                const r=tableBody.insertRow();r.insertCell().textContent=i+startIndex;
+                const ac=r.insertCell();ac.textContent=p.alpha_deg.toFixed(1);ac.className='editable';ac.dataset.row=i;ac.dataset.param='alpha_deg';
+                const aCell=r.insertCell();aCell.textContent=p.a.toFixed(3);aCell.className='editable';aCell.dataset.row=i;aCell.dataset.param='a';
+                const dc=r.insertCell();const tc=r.insertCell();
+                if(p.type==='prismatic'){dc.innerHTML=`${p.d.toFixed(3)}<span class="q-label">(q${i+startIndex})</span>`;dc.className='variable-param';tc.textContent=p.theta_deg.toFixed(1);tc.className='editable';tc.dataset.row=i;tc.dataset.param='theta_deg';}else{dc.textContent=p.d.toFixed(3);dc.className='editable';dc.dataset.row=i;dc.dataset.param='d';tc.innerHTML=`${p.theta_deg.toFixed(1)}<span class="q-label">(q${i+startIndex})</span>`;tc.className='variable-param';}
+                r.querySelectorAll('.editable').forEach(c=>{c.addEventListener('click',()=>makeCellEditable(c));});
+            });
+        }
+        
+        function addLink(theta_init_deg,d_init,a_init,alpha_init_deg,jointType){const i=dhParams.length;const p={theta_deg:theta_init_deg,d:d_init,a:a_init,alpha_deg:alpha_init_deg,type:jointType};dhParams.push(p);const s=settings.convention==='standard'?1:0;let c;if(jointType==='revolute'){c=jointControlsFolder.add(p,'theta_deg',-180,180,1).name(`q${i+s} (θ)`).onChange(updateRobotVisualization);}else{c=jointControlsFolder.add(p,'d',-0.2,0.2,0.001).name(`q${i+s} (d)`).onChange(updateRobotVisualization);}jointControllers.push(c);updateRobotVisualization();}
+        function removeLastLink(){if(dhParams.length>0){dhParams.pop();jointControllers.pop().destroy();updateRobotVisualization();}}
+        function clearAllLinks(){dhParams=[];jointControllers.forEach(c=>c.destroy());jointControllers=[];updateRobotVisualization();}
+
+        function solveIKStep() {
+            if (dhParams.length === 0) return;
+            if (ik.iteration++ > ik.maxIterations) { console.warn("IK stopped: Max iterations reached."); ik.isRunning = false; return; }
+            const alpha = 0.5; const tolerance = 0.005;
+            let transforms = [T_base_orientation.clone()]; let currentTransform = T_base_orientation.clone();
+            for (let p of dhParams) { const T_link=createDHMatrix(THREE.MathUtils.degToRad(p.theta_deg),p.d,p.a,THREE.MathUtils.degToRad(p.alpha_deg)); currentTransform=new THREE.Matrix4().multiplyMatrices(currentTransform,T_link); transforms.push(currentTransform); }
+            const endEffectorPosition = new THREE.Vector3().setFromMatrixPosition(currentTransform);
+            const error = new THREE.Vector3().subVectors(ik.targetPositionVec, endEffectorPosition);
+            if (error.length() < tolerance) { console.log(`IK converged in ${ik.iteration} iterations.`); ik.isRunning = false; return; }
+            const jacobian = [];
+            for (let i = 0; i < dhParams.length; i++) {
+                const jointFrameTransform = (settings.convention === 'standard') ? transforms[i] : transforms[i + 1];
+                const p_joint = new THREE.Vector3().setFromMatrixPosition(jointFrameTransform);
+                const z_joint = new THREE.Vector3().setFromMatrixColumn(jointFrameTransform, 2).normalize();
+                let jacobian_col; if(dhParams[i].type==='revolute'){jacobian_col=new THREE.Vector3().crossVectors(z_joint,new THREE.Vector3().subVectors(endEffectorPosition,p_joint));}else{jacobian_col=z_joint;} jacobian.push(jacobian_col);
+            }
+            let delta_q = jacobian.map(j_col => alpha * j_col.dot(error));
+            dhParams.forEach((p, i) => { if(p.type==='revolute'){p.theta_deg+=THREE.MathUtils.radToDeg(delta_q[i]);}else{p.d+=delta_q[i];} });
+            jointControllers.forEach(c => c.updateDisplay());
+            updateRobotVisualization();
+        }
+
+        function updateRobotVisualization() {
+            clearRobotObjects();
+            let currentTransform=T_base_orientation.clone();let prevOrigin=new THREE.Vector3().setFromMatrixPosition(currentTransform);
+            for(let p of dhParams){const T_link=createDHMatrix(THREE.MathUtils.degToRad(p.theta_deg),p.d,p.a,THREE.MathUtils.degToRad(p.alpha_deg));const nextT=new THREE.Matrix4().multiplyMatrices(currentTransform,T_link);const frame=createLabeledAxes(AXIS_SIZE);frame.applyMatrix4(nextT);scene.add(frame);robotObjects.push(frame);const currentO=new THREE.Vector3().setFromMatrixPosition(nextT);const linkV=new THREE.Vector3().subVectors(currentO,prevOrigin);const len=linkV.length();if(len>0.001){const linkC=new THREE.Mesh(new THREE.CylinderGeometry(0.03,0.03,len,16),linkMaterial);linkC.position.copy(prevOrigin).add(linkV.clone().multiplyScalar(0.5));linkC.quaternion.setFromUnitVectors(new THREE.Vector3(0,1,0),linkV.clone().normalize());linkC.castShadow=true;linkC.receiveShadow=true;scene.add(linkC);robotObjects.push(linkC);}const jointS=new THREE.Mesh(new THREE.SphereGeometry(0.05,16,16),jointMaterial);jointS.position.copy(currentO);jointS.castShadow=true;jointS.receiveShadow=true;scene.add(jointS);robotObjects.push(jointS);currentTransform.copy(nextT);prevOrigin.copy(currentO);}
+            const ee=createEndEffector();ee.applyMatrix4(currentTransform);scene.add(ee);robotObjects.push(ee);const eeP=new THREE.Vector3();const eeQ=new THREE.Quaternion();currentTransform.decompose(eeP,eeQ,new THREE.Vector3());const eeE=new THREE.Euler().setFromQuaternion(eeQ,'ZYX');
+            document.getElementById('ee-pos').textContent=`${eeP.x.toFixed(3)}, ${eeP.y.toFixed(3)}, ${eeP.z.toFixed(3)}`;document.getElementById('ee-rot').textContent=`${THREE.MathUtils.radToDeg(eeE.x).toFixed(1)}°, ${THREE.MathUtils.radToDeg(eeE.y).toFixed(1)}°, ${THREE.MathUtils.radToDeg(eeE.z).toFixed(1)}°`;
+            updateDHTable();
+        }
+        
+        function animate(){requestAnimationFrame(animate);if(ik.isRunning){solveIKStep();}orbitControls.update();renderer.render(scene,camera);}
+        function onWindowResize(){camera.aspect=window.innerWidth/window.innerHeight;camera.updateProjectionMatrix();renderer.setSize(window.innerWidth,window.innerHeight);}
+        function getKeyByValue(o,v){return Object.keys(o).find(k=>o[k]===v);}
+        function createEndEffector(){const g=new THREE.Group();const pM=new THREE.Mesh(new THREE.BoxGeometry(0.04,0.08,0.04),endEffectorMaterial);pM.position.y=0.04;const f1M=new THREE.Mesh(new THREE.BoxGeometry(0.015,0.07,0.02),endEffectorMaterial);f1M.position.set(0.0275,0.08,0);const f2M=f1M.clone();f2M.position.x=-0.0275;g.add(pM,f1M,f2M);g.quaternion.setFromEuler(new THREE.Euler(Math.PI/2,0,0));g.traverse(c=>{if(c.isMesh){c.castShadow=true;c.receiveShadow=true;}});return g;}
+        function createDHMatrix(t,d,a,alpha){const T=new THREE.Matrix4();const cT=Math.cos(t),sT=Math.sin(t),cA=Math.cos(alpha),sA=Math.sin(alpha);if(settings.convention==='standard'){T.set(cT,-sT*cA,sT*sA,a*cT,sT,cT*cA,-cT*sA,a*sT,0,sA,cA,d,0,0,0,1);}else{T.set(cT,-sT,0,a,sT*cA,cT*cA,-sA,-sA*d,sT*sA,cT*sA,cA,cA*d,0,0,0,1);}return T;}
+        function clearRobotObjects(){robotObjects.forEach(o=>{scene.remove(o);if(o.traverse){o.traverse(c=>{if(c.geometry)c.geometry.dispose();if(c.material)c.material.dispose();});}});robotObjects=[];}
+
+        init();
+    </script>
+</body>
+</html>
