@@ -91,4 +91,4 @@ Distributed under the MIT License. See `LICENSE` for more information.
 ## 🙏 Acknowledgments
 
 *   Created by **Vahid Tavakkoli** for educational purposes.
-*   A great resource for learning kinematics: [Modern Robotics by Kevin Lynch and Frank Park](http://modernrobotics.org/).
+*   A great resource for learning kinematics: [Modern Robotics by Kevin M. Lynch and Frank C. Park](http://modernrobotics.org/).
