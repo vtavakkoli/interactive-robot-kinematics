@@ -38,7 +38,7 @@ You only need a modern web browser that supports WebGL (like Chrome, Firefox, or
 
 1.  **Clone the repository:**
     ```sh
-    git clone https://github.com/your-username/interactive-robot-kinematics.git
+    git clone https://github.com/vtavakkoli/interactive-robot-kinematics.git
     ```
 2.  **Open the file:**
     Navigate to the cloned directory and open the `index.html` file in your browser.
