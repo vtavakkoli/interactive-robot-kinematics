@@ -5,8 +5,7 @@
   
 *(It is highly recommended to replace the link above with a GIF or screenshot of your application in action!)*
 
-### [Live Demo &raquo;](https://your-username.github.io/interactive-robot-kinematics/)
-*(Replace this with the URL where you host your project, for example, on GitHub Pages.)*
+### [Live Demo &raquo;](https://vtavakkoli.github.io/interactive-robot-kinematics/)
 
 ---
 
