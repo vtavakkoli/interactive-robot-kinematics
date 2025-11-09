@@ -3,7 +3,7 @@
 > An interactive, browser-based 3D simulator for building custom robot arms and visualizing forward and inverse kinematics using Denavit-Hartenberg (DH) parameters. Built with Three.js.
 
   
-*(It is highly recommended to replace the link above with a GIF or screenshot of your application in action!)*
+![Interactive Robot Kinematics Demo](Interactive_Robot_Builder.gif)
 
 ### [Live Demo &raquo;](https://vtavakkoli.github.io/interactive-robot-kinematics/)
 
